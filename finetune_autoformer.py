@@ -6,6 +6,7 @@ import evaluate
 
 import pandas as pd 
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import precision_score
 from torch.utils.data import DataLoader, Dataset
 import matplotlib.pyplot as plt
 from scipy.signal import find_peaks
@@ -34,7 +35,7 @@ class PowerDemandDataset(Dataset):
 
         number_peaks = len(find_peaks(future_values, distance=daily_distance)[0])
 
-        return 0 if number_peaks == 5 else 1
+        return 0 if number_peaks >= 5 else 1
 
 
 
@@ -87,7 +88,7 @@ class ToTimeSeries(object):
         # Grouped indices is the result of the number of records in the dataframe 
         # divided by the number of months in a year.
 
-        rolling_windows = dataframe["demand"].rolling(window=grouped_indices, step=100)
+        rolling_windows = dataframe["demand"].rolling(window=grouped_indices, step=500)
 
         windows = [{"yearly_demand":list(window)}
         for window in rolling_windows if len(window) == grouped_indices]
@@ -159,26 +160,45 @@ def train_one_epoch(train_dataloader: DataLoader, model:AutoformerForPrediction,
 
         running_loss += loss.item()
         
-        if i% (num_batches - 1) == 0:
+        if (i + 1)% (num_batches) == 0:
             last_loss = running_loss / num_batches  # loss per batch
             print('epoch {}  batch {} loss: {}'.format(epoch + 1, i + 1, last_loss))
             running_loss = 0.
 
-def evaluate_model(model: AutoformerForPrediction, test_loader: DataLoader):
 
-    model.to("cpu")
+
+def process_dataset(batch_size):
+        
+    dataframe = pd.read_csv("power_data.txt", names=["demand"])
+
+    train_dataframe, test_dataframe = train_test_split(dataframe, test_size=0.2, shuffle=False)
+
+    dataset = PowerDemandDataset(dataframe, transform=ToTimeSeries())
+    train_dataset = PowerDemandDataset(train_dataframe, transform=ToTimeSeries())
+    test_dataset = PowerDemandDataset(test_dataframe, transform=ToTimeSeries())
+
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
+    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+    return train_dataloader, test_dataloader
+
+def evaluate_model(model: AutoformerForPrediction, test_loader: DataLoader):
+    torch.cuda.empty_cache()
     model.eval()
-    running_loss = 0 
     # Disable gradient computation and reduce memory consumption.
     with torch.no_grad():
         for i, batch in enumerate(test_loader):
-            past_values = batch['past_values'].to("cpu")
-            future_values = batch['future_values'].to("cpu")
-            past_time_features = batch["past_time_features"].to("cpu")
-            past_observed_mask = batch["past_observed_mask"].to("cpu")
-            future_time_features = batch["future_time_features"].to("cpu")
-            label = batch["label"].to("cpu")
+            breakpoint()
+            past_values = batch['past_values'].to("cuda")
+            future_values = batch['future_values'].to("cuda")
+            past_time_features = batch["past_time_features"].to("cuda")
+            past_observed_mask = batch["past_observed_mask"].to("cuda")
+            future_time_features = batch["future_time_features"].to("cuda")
+            labels = batch["label"].to("cuda")
 
+            model.to("cuda")
+        
             outputs = model.generate(past_values=past_values, 
                             past_time_features=past_time_features,
                             past_observed_mask=past_observed_mask,
@@ -188,14 +208,9 @@ def evaluate_model(model: AutoformerForPrediction, test_loader: DataLoader):
             time_series_mean = outputs.sequences.mean(dim=1)
             time_series_std = outputs.sequences.std(dim=1)
 
-            prediction = (torch.mean(
-                torch.abs(future_values - time_series_mean) / (2 *  time_series_std), axis = 1) >= 1).type(torch.IntTensor)
+            predictions = (torch.mean(torch.abs(future_values - time_series_mean) / (2 *  time_series_std), axis = 1) >= 1).type(torch.LongTensor)
 
-            loss = outputs.loss
-            running_loss += loss
-
-    avg_loss = running_loss / (i + 1)
-    print(f"LOSS test: {avg_loss} Precicion: {precision} Recall: {Recall}: F1 {F1_score}")
+            print(precision_score(labels.cpu(), predictions.cpu(), pos_label=0))
 
 if __name__ == "__main__":
 
@@ -213,15 +228,7 @@ if __name__ == "__main__":
     epochs = args.epochs
     batch_size = args.batch_size
     
-    dataframe = pd.read_csv("power_data.txt", names=["demand"])
-
-    train_dataframe, test_dataframe = train_test_split(dataframe, test_size=0.2, shuffle=False)
-
-    train_dataset = PowerDemandDataset(train_dataframe, transform=ToTimeSeries())
-    test_dataset = PowerDemandDataset(test_dataframe, transform=ToTimeSeries())
-
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
-    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    train_dataloader, test_dataloader = process_dataset(batch_size=batch_size)
 
     configuration = AutoformerConfig(prediction_length=730, context_length=2183, num_time_features=1)
     model = AutoformerForPrediction.from_pretrained("kashif/autoformer-electricity-hourly", config=configuration, ignore_mismatched_sizes=True).to(device)
@@ -229,9 +236,10 @@ if __name__ == "__main__":
     for param in model.parameters():
         param.requires_grad_(False)
     
-    for i, param in enumerate(model.parameters()):
-        if i >= 20:
-            param.requires_grad_()
+    model.parameter_projection.requires_grad_()
+    # for i, param in enumerate(model.parameters()):
+    #    if i >= 10:
+    #        param.requires_grad_()
 
     # This works without having to iterate
     # NOTE: Not all layers shown from print(model) are callable
@@ -240,7 +248,9 @@ if __name__ == "__main__":
     for epoch in range(epochs):
         train_one_epoch(train_dataloader=train_dataloader, model=model, lr=lr, epoch=epoch)
 
+    torch.save(model.state_dict(), "./finetuned_autoformer.pt")
 #----------------------------------------------------------------------------------------------------------------------------
     evaluate_model(model, test_dataloader)
+
 
 # mase_metric = evaluate.load("evaluate-metric/mase")
