@@ -2,12 +2,14 @@ import torch
 import argparse
 
 from transformers import AutoformerForPrediction, AutoformerConfig
-import evaluate
 
 import pandas as pd 
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import precision_score
+
 from torch.utils.data import DataLoader, Dataset
+from torch.utils.tensorboard import SummaryWriter
+
 import matplotlib.pyplot as plt
 from scipy.signal import find_peaks
 
@@ -131,7 +133,8 @@ def plot_monthly_data(dataset: PowerDemandDataset):
 
 
 
-def train_one_epoch(train_dataloader: DataLoader, model:AutoformerForPrediction, lr:int, epoch:int):
+def train_one_epoch(train_dataloader: DataLoader,
+        model:AutoformerForPrediction, lr:int, epoch:int, writer:SummaryWriter):
 
     optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
     running_loss = 0
@@ -155,6 +158,8 @@ def train_one_epoch(train_dataloader: DataLoader, model:AutoformerForPrediction,
         future_time_features=future_time_features)
 
         loss = outputs.loss
+
+        writer.add_scalar("Loss/Train",loss, i)
         loss.backward()
         optimizer.step()
 
@@ -228,6 +233,7 @@ if __name__ == "__main__":
     epochs = args.epochs
     batch_size = args.batch_size
     
+    writer = SummaryWriter(log_dir= f"experiments/lr={lr}/epochs={epochs}/batch_size={batch_size}")
     train_dataloader, test_dataloader = process_dataset(batch_size=batch_size)
 
     configuration = AutoformerConfig(prediction_length=730, context_length=2183, num_time_features=1)
@@ -246,7 +252,7 @@ if __name__ == "__main__":
     # TODO: Investigate
 
     for epoch in range(epochs):
-        train_one_epoch(train_dataloader=train_dataloader, model=model, lr=lr, epoch=epoch)
+        train_one_epoch(train_dataloader=train_dataloader, writer=writer, model=model, lr=lr, epoch=epoch)
 
     torch.save(model.state_dict(), "./finetuned_autoformer.pt")
 #----------------------------------------------------------------------------------------------------------------------------
