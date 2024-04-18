@@ -93,7 +93,8 @@ class ToTimeSeries(object):
         # Grouped indices is the result of the number of records in the dataframe 
         # divided by the number of months in a year.
 
-        rolling_windows = dataframe["demand"].rolling(window=self.window_size, step=self.window_size)
+        print(self.window_size)
+        rolling_windows = dataframe["demand"].rolling(window=self.window_size, step=self.window_size // 2)
 
         windows = [{"yearly_demand":list(window)}
         for window in rolling_windows if len(window) == grouped_indices]
@@ -137,7 +138,7 @@ def train_one_epoch(train_dataloader: DataLoader,
         epoch:int, writer:SummaryWriter):
 
     torch.cuda.empty_cache()
-    optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr)#, momentum=0.9)
     running_loss = 0
     last_loss = 0
 
