@@ -36,7 +36,7 @@ class PowerDemandDataset(Dataset):
 
         future_values = self.dataframe["future_values"].iloc[index]
 
-        number_peaks = len(find_peaks(future_values, distance=daily_distance)[0])
+        number_peaks = len(find_peaks(future_values, height=1500, distance=80)[0])
 
         return 1 if number_peaks >= 5 else 0
 
@@ -93,13 +93,12 @@ class ToTimeSeries(object):
         # Grouped indices is the result of the number of records in the dataframe 
         # divided by the number of months in a year.
 
-        rolling_windows = dataframe["demand"].rolling(window=grouped_indices)#, step=self.window_size)
+        rolling_windows = dataframe["demand"].rolling(window=self.window_size, step=self.window_size)
 
         windows = [{"yearly_demand":list(window)}
         for window in rolling_windows if len(window) == grouped_indices]
 
         dataframe_final = pd.DataFrame(windows)
-        breakpoint()
         # dataframe["month"] = dataframe.index // grouped_indices
 
         # dataframe_final = dataframe.groupby("month")["demand"].apply(list).to_frame()
@@ -112,10 +111,7 @@ class ToTimeSeries(object):
         dataframe_final["past_values"] = dataframe_final["yearly_demand"].apply(lambda x: x[:-730])
         dataframe_final["future_values"] = dataframe_final["yearly_demand"].apply(lambda x: x[-730:])
 
-        dataframe_len = len(dataframe_final)
 
-        # dataframe_final = dataframe_final.sample(0.75 * dataframe_len, random_state=42)
-        # breakpoint()
         return dataframe_final
 
 def plot_monthly_data(dataset: PowerDemandDataset):
@@ -177,7 +173,7 @@ def train_one_epoch(train_dataloader: DataLoader,
     
 def process_dataset(batch_size: int, window_size: int):
         
-    dataframe = pd.read_csv("power_data.txt", names=["demand"])
+    dataframe = pd.read_csv("./data/power_data.txt", names=["demand"])
 
     train_dataframe, test_dataframe = train_test_split(dataframe, test_size=0.3, shuffle=False)
 
@@ -188,7 +184,7 @@ def process_dataset(batch_size: int, window_size: int):
 
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
-    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    test_dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
 
     return train_dataloader, test_dataloader
 
@@ -206,20 +202,13 @@ def evaluate_model(model: AutoformerForPrediction, test_loader: DataLoader, writ
             labels = batch["label"].to(device)
 
             model.to(device)
-            outputs = model.generate(past_values=past_values, 
+            outputs = model(past_values=past_values, 
                             past_time_features=past_time_features,
                             past_observed_mask=past_observed_mask,
-                            future_time_features=future_time_features)
+                            future_time_features=future_time_features,
+                            future_values=future_values)
     
-            time_series_mean = outputs.sequences.mean(dim=1)
-            time_series_std = outputs.sequences.std(dim=1)
-
-            predictions = (torch.mean(torch.abs(future_values - time_series_mean) / (2 *  time_series_std), axis = 1) < 1).type(torch.LongTensor)
-            if 1 in labels:
-                print(f"batch:{i}, labels:{labels}, score:{precision_score(labels.cpu(), predictions.cpu())}")
-                print("Classification Report/Test", classification_report(labels.cpu(), predictions.cpu()))
-
-            # writer.add_text("Classification Report/Test", classification_report(labels.cpu(), predictions.cpu()))
+            print(f"label: {labels}, loss: {outputs.loss}")
 
 if __name__ == "__main__":
 
@@ -251,14 +240,9 @@ if __name__ == "__main__":
     writer = SummaryWriter(log_dir=log_dir)
     train_dataloader, test_dataloader = process_dataset(batch_size=batch_size, window_size=window_size)
 
-    for batch in train_dataloader: 
-        if 1 in batch["label"]: print(batch["label"])
 
-   
-  
-
-#    configuration = AutoformerConfig(prediction_length=730, context_length=2183, num_time_features=1)
-#    model = AutoformerForPrediction.from_pretrained("kashif/autoformer-electricity-hourly", config=configuration, ignore_mismatched_sizes=True).to(device) 
+    configuration = AutoformerConfig(prediction_length=730, context_length=2183, num_time_features=1)
+    model = AutoformerForPrediction(config=configuration).to(device) # .from_pretrained("kashif/autoformer-electricity-hourly", config=configuration, ignore_mismatched_sizes=True).to(device) 
 #
 #    for param in model.parameters():
 #        param.requires_grad_(False)
@@ -273,14 +257,14 @@ if __name__ == "__main__":
 #   # NOTE: Not all layers shown from print(model) are callable
 #   # TODO: Investigate
 #
-#    for epoch in range(epochs):
-#         train_one_epoch(
-#                 train_dataloader=train_dataloader, writer=writer,
-#                 model=model, lr=lr, epoch=epoch)
+    for epoch in range(epochs):
+         train_one_epoch(
+                 train_dataloader=train_dataloader, writer=writer,
+                 model=model, lr=lr, epoch=epoch)
 #   # 
 #
 #   # torch.save(model.state_dict(), "./finetuned_autoformer.pt")
-#    evaluate_model(model, test_dataloader, writer)
+    evaluate_model(model, test_dataloader, writer)
 #
-#    hyperparams_file.close()
+    hyperparams_file.close()
 #
